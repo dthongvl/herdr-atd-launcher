@@ -40,7 +40,7 @@ Keep anything testable in `mod/lib/` and free of `herdr`/`gpui-*` imports; `main
 - Screens form a stack (`this.stack`); the main list is the bottom. `list` screens have `build() → sections`, `onEnter`, optional `onTab`/`onMove`; `prompt` and `record` screens edit text / capture a keystroke.
 - Flows are async: `await this.pick(...)`, `this.prompt(...)`, `this.confirm(...)` push a screen and resolve on Enter (value) or Esc (`null`). `this.steps(cx, [fn...])` chains inputs: a step returns `BACK` to go to the previous one; a thrown error shows the Error screen and repeats the same step with what was typed kept.
 - Menu items are `{ label, icon, color, act(cx) }`. Enter runs the first item. An `act` that returns a string after a settings change pops the menu and shows it as the status line. Actions that leave the palette call `this.close()` and then `run(...)`.
-- Text fields are drawn by the palette (no native `Input`), so every key reaches `onKey`.
+- Text fields are gpui-base `Input`s (`this.fields`: one `InputState` per placeholder), so input methods, selection and paste work. The field keeps letters, Backspace, ←/→ and plain Enter (its `submit` → `enter()`); other keys bubble to the root's `on_key_down` → `onKey`, which must `stop_propagation` only for keys it uses, or typing breaks. After changing `this.stack`, call `syncField()` (`push`, `finish`, `back` do).
 - The config is read on open; `this.save(raw => edit)` re-reads, refuses if the file changed on disk, applies a `lib/config.js` edit and writes with `writeTextFile`'s stale check.
 
 ## Dev loop

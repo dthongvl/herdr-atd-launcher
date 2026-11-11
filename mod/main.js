@@ -6,7 +6,7 @@
 // plain async functions (`await this.pick(...)`). Esc pops one step.
 
 import { View, div } from "gpui-kit";
-import { v_flex, h_flex, v_virtual_list, Scrollbar, VirtualListScrollHandle } from "gpui-base";
+import { v_flex, h_flex, v_virtual_list, Scrollbar, VirtualListScrollHandle, InputState, Input } from "gpui-base";
 import {
   spaces, agents, panes, focused, commands, terminals, theme, props, closeOverlay, run, hc, exec,
   home, appHome, readTextFile, writeTextFile, layout, layouts, themes, notify, settings, window as appWindow,
@@ -23,11 +23,20 @@ const HEAD_H = 26;
 
 export default class Palette extends View {
   init(_props, cx) {
-    this.handle = cx.focus_handle();
-    this.handle.focus();
+    this.handle = cx.focus_handle(); // the palette's own keyboard: the record screen has no text field
+    // Text fields are herdr-app's native ones, so input methods (IBus…), selection and paste work.
+    // One per placeholder: the main search, other lists' search, prompts.
+    this.fields = {
+      main: InputState.new({ placeholder: "Search everything…" }),
+      list: InputState.new({ placeholder: "Search…" }),
+      prompt: InputState.new({}),
+    };
+    for (const st of Object.values(this.fields)) {
+      st.on("change", (_e, cx) => this.onTextChange(st, cx));
+      st.on("submit", (e, cx) => this.enter(runMode({ platform: e.secondary, shift: e.shift }), cx));
+    }
     // The window overlay moves focus on Tab before on_key_down sees it, so bind Tab to an action.
     try { cx.bind_keys([{ keystroke: "tab", action: "atd-tab", context: "AtdPalette" }]); } catch (e) { /* keep going: other keys still work */ }
-    cx.timer.after(300, () => this.handle.focus());
     this.scroll = VirtualListScrollHandle.new();
     this.home = home();
     this.platform = appWindow()?.platform ?? "linux";
@@ -44,6 +53,8 @@ export default class Palette extends View {
     this.origin = { space: f?.space ?? null, tab: f?.tab ?? null, pane: f?.pane ?? null, terminal: f?.terminal ?? null, cwd: f?.cwd ?? null };
     this.host = hostActions(commands());
     this.stack = [this.mainScreen()];
+    this.syncField();
+    cx.timer.after(300, () => this.syncField());
     cx.spawn(async (cx) => {
       try {
         const r = await exec("sh", ["-c", 'printf %s "$SHELL"']);
@@ -117,7 +128,7 @@ export default class Palette extends View {
 
   mainScreen() {
     return {
-      type: "list", main: true, title: "Command Palette", query: "", cursor: 0, sel: 0, selKey: null, counter: true,
+      type: "list", main: true, title: "Command Palette", query: "", sel: 0, selKey: null, counter: true,
       build: () => buildMain(this.snap(), this.cfg, this.ctx()),
       footer: (row) => this.mainFooter(row),
       onEnter: (row, cx, mode) => this.enterRow(row, cx, mode),
@@ -128,7 +139,8 @@ export default class Palette extends View {
   top() { return this.stack[this.stack.length - 1]; }
 
   push(cx, screen) {
-    this.stack.push({ query: "", cursor: 0, sel: 0, selKey: null, ...screen });
+    this.stack.push({ query: "", sel: 0, selKey: null, ...screen });
+    this.syncField();
     this.scroll.scroll_to_item(0);
     cx.notify();
   }
@@ -143,7 +155,43 @@ export default class Palette extends View {
   finish(screen, value) {
     const i = this.stack.indexOf(screen);
     if (i > 0) this.stack.splice(i, 1);
+    this.syncField();
     screen.resolve?.(value);
+  }
+
+  // ---- text fields --------------------------------------------------------------
+
+  fieldFor(s) {
+    return s.type === "prompt" ? this.fields.prompt : s.main ? this.fields.main : this.fields.list;
+  }
+
+  /** Puts the top screen's text in its field and the keyboard on it. Call after the stack changes. */
+  syncField() {
+    if (this.closed) return;
+    const s = this.top();
+    if (s.type === "record") return this.handle.focus();
+    const st = this.fieldFor(s);
+    const text = s.type === "prompt" ? s.value : s.query;
+    if (st.value() !== text) st.set_value(text);
+    st.focus();
+  }
+
+  /** Sets the top screen's text from code (Esc, Ctrl+U), field included. */
+  setText(s, text) {
+    if (s.type === "prompt") { s.value = text; s.note = s.check ? s.check(text) : null; }
+    else { s.query = text; s.sel = 0; s.selKey = null; this.scroll.scroll_to_item(0); }
+    const st = this.fieldFor(s);
+    if (st.value() !== text) st.set_value(text);
+  }
+
+  onTextChange(st, cx) {
+    const s = this.top();
+    if (s.type === "record" || this.fieldFor(s) !== st) return;
+    const text = st.value();
+    if (text === (s.type === "prompt" ? s.value : s.query)) return;
+    this.status = null;
+    this.setText(s, text);
+    cx.notify();
   }
 
   // Every way out: Esc, Ctrl+C, actions, and herdr-app's teardown hook `close(cx)`
@@ -165,10 +213,10 @@ export default class Palette extends View {
   back(cx) {
     const s = this.top();
     if (s.type === "list" && s.query) {
-      s.query = ""; s.cursor = 0; s.sel = 0; s.selKey = null;
+      this.setText(s, "");
     } else if (this.stack.length > 1) {
       if (s.resolve) this.finish(s, null);
-      else this.stack.pop();
+      else { this.stack.pop(); this.syncField(); }
       this.scrollToSel();
     } else {
       this.close();
@@ -252,46 +300,32 @@ export default class Palette extends View {
 
   /** A one-line text prompt. Resolves the text or null. */
   prompt(cx, title, { value = "", help = "", check = null } = {}) {
-    return this.ask(cx, { type: "prompt", title, value, cursor: value.length, help, check, note: null, footer: "Enter OK · Esc back" });
+    return this.ask(cx, { type: "prompt", title, value, help, check, note: null, footer: "Enter OK · Esc back" });
   }
 
   // ---- key handling -------------------------------------------------------------
 
+  // Keys the text field doesn't take. Stop propagation only for keys used here:
+  // anything else (letters, Backspace, ←/→…) belongs to the field.
   onKey(e, cx) {
     const s = this.top();
     const m = e.modifiers ?? {};
     const k = e.key;
-    cx.stop_propagation();
-    if (this.status) this.status = null;
-    if (k === "c" && m.control) return this.close();
+    if (k === "c" && m.control) { cx.stop_propagation(); return this.close(); }
 
     if (s.type === "record") {
+      cx.stop_propagation();
       if (k === "escape") return this.back(cx);
       if (["shift", "control", "alt", "platform", "function", "cmd", "ctrl"].includes(k)) return;
       this.finish(s, e.keystroke);
       return cx.notify();
     }
-    if (k === "escape") return this.back(cx);
+    if (k === "escape") { cx.stop_propagation(); this.status = null; return this.back(cx); }
+    // Plain Enter normally arrives as the field's submit; Alt+Enter and friends may come here.
+    if (k === "enter") { cx.stop_propagation(); return this.enter(runMode(m), cx); }
+    if (k === "u" && m.control) { cx.stop_propagation(); this.status = null; this.setText(s, ""); return cx.notify(); }
+    if (s.type !== "list") return;
 
-    // Text editing (search or prompt).
-    const field = s.type === "prompt" ? "value" : "query";
-    if (this.editText(s, field, e, m)) {
-      if (s.type === "list") { s.sel = 0; s.selKey = null; this.scroll.scroll_to_item(0); }
-      if (s.type === "prompt") s.note = s.check ? s.check(s.value) : null;
-      return cx.notify();
-    }
-
-    if (s.type === "prompt") {
-      if (k === "enter") {
-        const note = s.check ? s.check(s.value) : null;
-        if (note) { s.note = note; return cx.notify(); }
-        this.finish(s, s.value);
-        return cx.notify();
-      }
-      return;
-    }
-
-    // Lists.
     const { rows } = this.view(s);
     const n = rows.length;
     const move = (d) => {
@@ -301,45 +335,35 @@ export default class Palette extends View {
       this.scrollToSel(d);
     };
     const row = rows[s.sel];
-    if (k === "up" && m.shift && s.onMove) { if (row) s.onMove(row, -1, cx); return cx.notify(); }
-    if (k === "down" && m.shift && s.onMove) { if (row) s.onMove(row, 1, cx); return cx.notify(); }
-    if (k === "up" || (m.control && k === "p")) move(-1);
+    if ((k === "up" || k === "down") && m.shift && s.onMove) { if (row) s.onMove(row, k === "up" ? -1 : 1, cx); }
+    else if (k === "up" || (m.control && k === "p")) move(-1);
     else if (k === "down" || (m.control && k === "n")) move(1);
     else if (k === "pageup") move(-10);
     else if (k === "pagedown") move(10);
-    else if (k === "enter") {
-      if (row) s.onEnter?.(row, cx, runMode(m));
-    } else if (k === "tab") {
-      if (row && s.onTab) s.onTab(row, cx);
-    } else return;
+    else if (k === "tab") { if (row && s.onTab) s.onTab(row, cx); }
+    else return;
+    cx.stop_propagation();
+    this.status = null;
     cx.notify();
   }
 
-  // Returns true when the key edited the text.
-  editText(s, field, e, m) {
-    const k = e.key;
-    const v = s[field];
-    const c = s.cursor;
-    const set = (nv, nc) => { s[field] = nv; s.cursor = nc; };
-    if (m.control && k === "u") { set("", 0); return true; }
-    if (m.control && k === "a") { s.cursor = 0; return true; }
-    if (m.control && k === "e") { s.cursor = v.length; return true; }
-    if (k === "home") { s.cursor = 0; return true; }
-    if (k === "end") { s.cursor = v.length; return true; }
-    if (k === "left") { s.cursor = Math.max(0, c - 1); return true; }
-    if (k === "right") { s.cursor = Math.min(v.length, c + 1); return true; }
-    if (k === "backspace") {
-      if (m.platform) { set(v.slice(c), 0); return true; }
-      if (c > 0) set(v.slice(0, c - 1) + v.slice(c), c - 1);
-      return true;
+  /** Enter with a run mode (§6.1), from the field's submit or from onKey. */
+  enter(mode, cx) {
+    // One press can reach both the field's submit and on_key_down; act on it once.
+    const now = Date.now();
+    if (now - (this.lastEnter ?? 0) < 80) return;
+    this.lastEnter = now;
+    const s = this.top();
+    this.status = null;
+    if (s.type === "prompt") {
+      const note = s.check ? s.check(s.value) : null;
+      if (note) s.note = note;
+      else this.finish(s, s.value);
+    } else if (s.type === "list") {
+      const row = this.view(s).rows[s.sel];
+      if (row) s.onEnter?.(row, cx, mode);
     }
-    if (k === "delete") { set(v.slice(0, c) + v.slice(c + 1), c); return true; }
-    const ch = e.key_char;
-    if (ch && !m.control && !m.platform && k !== "enter" && k !== "tab" && k !== "escape" && ch >= " ") {
-      set(v.slice(0, c) + ch + v.slice(c), c + ch.length);
-      return true;
-    }
-    return false;
+    cx.notify();
   }
 
   /** The list a screen shows now: items (with headers) and selectable rows. */
@@ -419,7 +443,7 @@ export default class Palette extends View {
         if (did && !this.closed) {
           // A settings change: back to the list below, with a status line.
           const i = this.stack.indexOf(screen);
-          if (i > 0) this.stack.splice(i, 1);
+          if (i > 0) { this.stack.splice(i, 1); this.syncField(); }
           if (typeof did === "string") this.setStatus(did);
         }
       }),
@@ -1120,14 +1144,9 @@ export default class Palette extends View {
         cx.notify();
       });
 
-    const caret = div().w(2).h(16).bg(t.accent).loop("opacity", { from: 0.25, to: 1, period: 1000 });
     const search = h_flex().h(34).flex_none().px(10).gap(6).items_center().rounded(8).border_1().border_color(t.input).bg(t.background)
       .child(div().text_color(t.dim).child(">"))
-      .child(h_flex().flex_1().min_w(0).items_center().overflow_hidden()
-        .child(div().text_color(t.foreground).child(s.query.slice(0, s.cursor)))
-        .child(caret)
-        .child(div().text_color(t.foreground).child(s.query.slice(s.cursor)))
-        .when(!s.query, (el) => el.child(div().text_color(t.dim).child(s.main ? "Search everything…" : "Search…"))));
+      .child(Input.new(this.fieldFor(s)).flex_1().h_full().text_color(t.foreground));
 
     return v_flex().flex_1().min_h(0).gap(8)
       .child(search)
@@ -1140,12 +1159,9 @@ export default class Palette extends View {
   }
 
   renderPrompt(t, s) {
-    const caret = div().w(2).h(16).bg(t.accent).loop("opacity", { from: 0.25, to: 1, period: 1000 });
     return v_flex().flex_1().min_h(0).gap(6)
-      .child(h_flex().h(34).flex_none().px(10).items_center().rounded(8).border_1().border_color(t.accent).bg(t.background).overflow_hidden()
-        .child(div().text_color(t.foreground).child(s.value.slice(0, s.cursor)))
-        .child(caret)
-        .child(div().text_color(t.foreground).child(s.value.slice(s.cursor))))
+      .child(h_flex().h(34).flex_none().px(10).items_center().rounded(8).border_1().border_color(t.accent).bg(t.background)
+        .child(Input.new(this.fields.prompt).flex_1().h_full().text_color(t.foreground)))
       .when(Boolean(s.note), (el) => el.child(div().px(4).text_size(12).text_color(t.ansi3).child(s.note)))
       .when(Boolean(s.help), (el) => el.child(div().px(4).text_size(12).text_color(t.dim).child(s.help)));
   }

@@ -110,9 +110,9 @@ While searching, each row also gets a color **type icon** between its action ico
 
 | Key | Where | Action |
 | --- | --- | --- |
-| type, `Backspace`, `Ctrl+U` | search, prompts | Edit / clear |
+| type, `Backspace`, `Ctrl+U` | search, prompts | Edit / clear. The search box and prompts are herdr-app's native text field (gpui-base `Input`), so input methods (IBus Bamboo…), selection, copy and paste work as in any other field |
 | `↑` `↓` `Ctrl+P` `Ctrl+N` `PgUp` `PgDn` | lists | Move. `↑` on the first row goes to the last and `↓` on the last goes to the first; `PgUp`/`PgDn` stop at the ends |
-| `←` `→` `Ctrl+A` `Ctrl+E` | text prompts | Move the cursor |
+| `←` `→` `Home` `End` | search, prompts | Move the cursor (the native field's own editing keys) |
 | `Enter` | anywhere | Do the default (§6.1: *choose space* on runnable rows, else the first item of the row's menu). In Manage quick actions, Enter opens the pin's options instead |
 | `⌘Enter` / `Alt+Enter` | runnable rows | New tab in the same space |
 | `Shift+Enter` | runnable rows | Right pane of the current tab |
@@ -123,7 +123,7 @@ While searching, each row also gets a color **type icon** between its action ico
 | `Ctrl+C` | anywhere | Close |
 | click / right-click | rows | Same as plain `Enter` / `Tab`. Modifiers don't apply to clicks |
 
-On rows that don't run anything (settings, open spaces, agents, host actions, pickers, prompts) the modifier + Enter keys do the same as Enter. `Alt` is the stand-in for `⌘` (§3); `Shift`/`⌘Shift`/`Alt+Shift` + Enter are not used by the palette's text editing. Key hints show `⌘` on macOS and `Alt` on Linux and Windows (`Alt+↵`, `Alt+⇧↵`).
+On rows that don't run anything (settings, open spaces, agents, host actions, pickers, prompts) the modifier + Enter keys do the same as Enter. In a text field Enter arrives as the field's *submit*, which reports Shift and the platform's secondary modifier (⌘ on macOS, Ctrl on Linux and Windows), so there `Ctrl+Enter` also means ⌘Enter. `Alt` is the stand-in for `⌘` (§3); `Shift`/`⌘Shift`/`Alt+Shift` + Enter are not used by the palette's text editing. Key hints show `⌘` on macOS and `Alt` on Linux and Windows (`Alt+↵`, `Alt+⇧↵`).
 
 ## 6. Rows
 
@@ -263,7 +263,7 @@ Recommended, and part of the install guide (README): start from `examples/atd-la
 - [ ] Command groups: one pin opens agent + dev server + tests
 - [ ] Import spaces from git repos under a root folder
 - [ ] Rank recently used items higher in search (needs a local state file, kept out of the config)
-- [ ] Paste (⌘V) in the search box and prompts (they're drawn by the palette, not a native input)
+- [x] Paste (⌘V) in the search box and prompts: they're herdr-app's native text field now (§5), which also makes input methods work (typing with IBus Bamboo did nothing before)
 - [ ] Remote spaces (on another machine) as saved spaces; today folder checks and matching are local only
 
 
